@@ -1,0 +1,6 @@
+*/1     *   *   *   *   sleep 00s; php WiFi_Watt_Meter_2_Zabbix.php > /dev/null
+*/1     *   *   *   *   sleep 10s; php WiFi_Watt_Meter_2_Zabbix.php > /dev/null
+*/1     *   *   *   *   sleep 20s; php WiFi_Watt_Meter_2_Zabbix.php > /dev/null
+*/1     *   *   *   *   sleep 30s; php WiFi_Watt_Meter_2_Zabbix.php > /dev/null
+*/1     *   *   *   *   sleep 40s; php WiFi_Watt_Meter_2_Zabbix.php > /dev/null
+*/1     *   *   *   *   sleep 50s; php WiFi_Watt_Meter_2_Zabbix.php > /dev/null
