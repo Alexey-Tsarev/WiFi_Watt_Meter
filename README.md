@@ -39,8 +39,6 @@ I captured data exchange via `Saleae Logic Software` (a `.logicdata` file).
 
 There are some images of resulted device:  
 https://github.com/AlexeySofree/WiFi_Watt_Meter/issues/1
-https://cloud.githubusercontent.com/assets/5929124/21467519/5d0836fc-ca0a-11e6-8132-003127f49fee.jpg
-https://cloud.githubusercontent.com/assets/5929124/21467520/5e3b2200-ca0a-11e6-82b5-aff88bd34381.jpg
 
 Thanks a lot,  
 Alexey Tsarev, Tsarev.Alexey at gmail.com
