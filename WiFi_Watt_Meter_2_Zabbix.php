@@ -11,6 +11,7 @@ $k[] = 'ampere';
 $k[] = 'watt';
 $k[] = 'freeHeap';
 $k[] = 'uptime';
+$k[] = 'obtainedAt';
 $k[] = 'clientHandleForced';
 // End Cfg
 
@@ -44,7 +45,7 @@ if ($jsonRaw === false) {
                 $kv .= "\n";
         }
 
-        $cmd = "echo \"" . $kv . "\" | " . $configZabbixSenderCmd . ' -z ' . $configZabbixHost . ' -i -';
+        $cmd = "echo \"$kv\" | $configZabbixSenderCmd -z $configZabbixHost -i -";
         echo "Run: $cmd\n";
         exec($cmd, $output, $ret);
 

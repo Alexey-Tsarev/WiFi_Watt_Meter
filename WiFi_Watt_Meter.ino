@@ -1,6 +1,7 @@
 /*
  * This is a ESP8266 project for reading data from a Watt Meter:
  * https://github.com/AlexeySofree/WiFi_Watt_Meter
+ * Alexey Tsarev, Tsarev.Alexey at gmail.com
 */
 
 #include <ArduinoOTA.h>
@@ -272,7 +273,8 @@ void doSync() {
             return;
     } while (dataOffset < 6);
 
-    if ((data[5] == 144) || (data[5] == 208))
+    //if ((data[5] == 144) || (data[5] == 146) || (data[5] == 208) || (data[5] == 210))
+    if ((data[5] & 0b10010000) == 0b10010000)
         do {
             if (!readBit())
                 return;
