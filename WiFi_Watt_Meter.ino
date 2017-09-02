@@ -9,8 +9,10 @@
 #include <ESP8266WebServer.h>
 #include <WiFiManager.h>
 #include <ArduinoJson.h>
+#include "Elapser.cpp"
+#include "Uptimer.cpp"
 
-// Cfg
+// Main config
 #define configPinCLK 5
 #define configPinSDO 4
 
@@ -21,19 +23,41 @@
 #define configHTTPPort 80
 #define configSerialSpeed 115200
 //#define configOTAisActive // Only for a development
-//#define configWDTO WDTO_8S
-// End Cfg
+// End Main config
+
+// Blynk сonfig
+//#define BLYNK_PRINT Serial
+//#define BLYNK_DEBUG
+//#define configBlinkSSL
+#ifdef configBlinkSSL
+#include <BlynkSimpleEsp8266_SSL.h>
+#else
+
+#include <BlynkSimpleEsp8266.h>
+
+#endif
+#define blynkAuthToken         "" // Blynk auth token
+#define blynkHost              ""
+#define blynkPort              0
+#define blynkSSLFingerprint    ""
+#define blynkSendDataInSeconds 0
+uint8_t vPinVolt = 0;
+uint8_t vPinAmpere = 1;
+uint8_t vPinWatt = 2;
+// End Blynk сonfig
 
 #define dataMaxBytes 24
 volatile bool CLKSynced, nextBit, pinSDOStatus;
-volatile unsigned long lastCLKRisedMicros, lastCLKSyncLenMicros, CLKSyncLenMicros;
-bool WiFiConnectedFlag, interruptActiveFlag, clientHandledFlag, clientHandleForcedFlag;
-byte data[dataMaxBytes], dataOffset, curByte, curBitOffset;
+volatile uint32_t lastCLKRisedMicros, lastCLKSyncLenMicros, CLKSyncLenMicros;
+bool WiFiConnectedFlag, interruptActiveFlag, clientHandledFlag, clientHandleForcedFlag, blynkFlag, blynkSSLFlag;
+uint8_t data[dataMaxBytes], dataOffset, curByte, curBitOffset;
 char strBuf[512], strBuf2[512];
-unsigned long i, j, curMicros, CLKSyncMinLenMicros = 1000, CLKSyncMaxLenMicros = 5000, disableInterruptWithinMicros = 580000, nextBitTimeoutMicros = 300000, clientMaxWaitMicros = 2500000, lastDoSyncStartMicros, lastDoSyncFinishMicros, lastClientHandledMicros, uptimeAddMillis, uptimeAddSec, prevMillis;
+uint32_t i, j, CLKSyncMinLenMicros = 1000, CLKSyncMaxLenMicros = 5000, disableInterruptWithinMicros = 580000, nextBitTimeoutMicros = 300000, clientMaxWaitMicros = 2500000, lastDoSyncStartMicros, lastDoSyncFinishMicros, lastClientHandledMicros, lastBlynkSentDataSec;
 double volt, ampere, watt;
-char voltStr[16], ampereStr[16], wattStr[16], obtainedAtStr[16];
+char voltStr[16] = "V (n/a)", ampereStr[16] = "A (n/a)", wattStr[16] = "W (n/a)", obtainedAtStr[16];
 
+uint32_t Elapser::lastTime;
+Uptimer uptimer;
 ESP8266WebServer server(configHTTPPort);
 
 
@@ -48,18 +72,52 @@ void log(const char s[] = "") {
 }
 
 
-unsigned long getElapsedMicros(unsigned long start) {
-    curMicros = micros();
+void BlynkConnectionConfigure(bool connect = false) {
+    blynkFlag = strlen(blynkAuthToken) > 0;
 
-    if (curMicros >= start)
-        return curMicros - start;
-    else
-        return 0xFFFFFFFF - start + curMicros + 1;
+    if (blynkFlag) {
+        lg("Blynk: configure connection... ");
+
+        blynkSSLFlag = strlen(blynkSSLFingerprint) > 0;
+#ifdef configBlinkSSL
+        if (blynkSSLFlag)
+                Blynk.config(blynkAuthToken, blynkHost, blynkPort, blynkSSLFingerprint);
+#endif
+        if (!blynkSSLFlag)
+            if (strlen(blynkHost))
+                if (blynkPort)
+                    Blynk.config(blynkAuthToken, blynkHost, blynkPort);
+                else
+                    Blynk.config(blynkAuthToken, blynkHost);
+            else
+                Blynk.config(blynkAuthToken);
+
+        log("complete");
+
+        if (connect) {
+            log("Blynk: connecting");
+            Blynk.connect();
+        }
+    }
 }
 
 
-bool isElapsedMicrosFromStart(unsigned long start, unsigned long elapsed) {
-    return getElapsedMicros(start) >= elapsed;
+BLYNK_CONNECTED() {
+    log("Blynk: connected");
+}
+
+
+BLYNK_READ_DEFAULT() {
+    uint8_t pin = request.pin;
+    snprintf(strBuf, sizeof(strBuf), "Blynk: read pin: %u", pin);
+    log(strBuf);
+
+    if (pin == vPinVolt)
+        Blynk.virtualWrite(pin, voltStr);
+    else if (pin == vPinAmpere)
+        Blynk.virtualWrite(pin, ampereStr);
+    else if (pin == vPinWatt)
+        Blynk.virtualWrite(pin, wattStr);
 }
 
 
@@ -69,11 +127,12 @@ void WiFiEvent(WiFiEvent_t event) {
             if (!WiFiConnectedFlag) {
                 WiFiConnectedFlag = true;
 
-                log("WiFi is ON");
-                lg("Connected to: ");
+                lg("WiFi: connected to ");
                 lg(WiFi.SSID().c_str());
                 lg(" / ");
                 log(WiFi.localIP().toString().c_str());
+
+                BlynkConnectionConfigure();
             }
 
             break;
@@ -81,7 +140,7 @@ void WiFiEvent(WiFiEvent_t event) {
             if (WiFiConnectedFlag) {
                 WiFiConnectedFlag = false;
 
-                log("WiFi is OFF");
+                log("WiFi: disconnected");
             }
 
             break;
@@ -93,35 +152,11 @@ void APConfigCallback(WiFiManager *myWiFiManager) {
 }
 
 
-void getCurTS(char out[]) {
-    unsigned long curMillis = millis();
-    unsigned long sec = curMillis / 1000;
-    unsigned int millis = curMillis - sec * 1000;
-
-    if (prevMillis > curMillis) {
-        uptimeAddSec += 4294967;
-        uptimeAddMillis += 296;
-    }
-
-    millis += uptimeAddMillis;
-
-    if (millis >= 1000) {
-        sec++;
-        millis -= 1000;
-    }
-
-    sec += uptimeAddSec;
-    prevMillis = curMillis;
-
-    sprintf(out, "%lu.%03i", sec, millis);
-}
-
-
 void getPrintableData(char out[]) {
     sprintf(out, "[%02u]: ", dataOffset);
-    byte len = dataOffset - 1;
+    uint8_t len = dataOffset - 1;
 
-    for (byte i = 0; i < dataOffset; i++) {
+    for (uint8_t i = 0; i < dataOffset; i++) {
         sprintf(out + strlen(out), "%03u", data[i]);
 
         if (i != len)
@@ -146,15 +181,15 @@ void handleURIRoot() {
     json["name"] = configWiFiManagerAPName;
     json["id"] = ESP.getChipId();
 
-    getCurTS(strBuf2);
+    uptimer.returnUptimeStr(strBuf2, sizeof(strBuf2));
     json["uptime"] = strBuf2;
 
     json["obtainedAt"] = obtainedAtStr;
     json["volt"] = voltStr;
     json["ampere"] = ampereStr;
     json["watt"] = wattStr;
-    json["clientHandleForced"] = byte(clientHandleForcedFlag);
-    json["WiFiStatus"] = byte(WiFiConnectedFlag);
+    json["clientHandleForced"] = uint8_t(clientHandleForcedFlag);
+    json["WiFiStatus"] = uint8_t(WiFiConnectedFlag);
     json["freeHeap"] = ESP.getFreeHeap();
 
     if (server.arg("pretty") == "1")
@@ -222,7 +257,7 @@ void interruptOnCLKChanged() {
     } else {
         // Falling
         if (!CLKSynced) {
-            lastCLKSyncLenMicros = getElapsedMicros(lastCLKRisedMicros);
+            lastCLKSyncLenMicros = Elapser::getElapsedTime(lastCLKRisedMicros, microSec);
 
             if ((lastCLKSyncLenMicros > CLKSyncMinLenMicros) && (lastCLKSyncLenMicros < CLKSyncMaxLenMicros)) {
                 CLKSyncLenMicros = lastCLKSyncLenMicros;
@@ -237,7 +272,7 @@ void interruptOnCLKChanged() {
 
 bool readBit() {
     while (!nextBit) {
-        if (isElapsedMicrosFromStart(lastCLKRisedMicros, nextBitTimeoutMicros)) {
+        if (Elapser::isElapsedTimeFromStart((uint32_t &) lastCLKRisedMicros, nextBitTimeoutMicros, microSec)) {
             CLKSynced = false;
             return false;
         } else {
@@ -298,10 +333,6 @@ void setup() {
 
     WiFi.onEvent(WiFiEvent);
 
-#ifdef configWDTO
-    ESP.wdtEnable(configWDTO);
-#endif
-
 #ifdef configWiFiManagerIsActive
     log("Connect or setup WiFi");
 
@@ -351,15 +382,15 @@ void loop() {
             if (dataOffset == dataMaxBytes) {
                 detachInt();
 
-                i = getElapsedMicros(lastDoSyncStartMicros);
-                lastDoSyncFinishMicros = curMicros;
+                i = Elapser::getElapsedTime(lastDoSyncStartMicros, microSec);
+                lastDoSyncFinishMicros = Elapser::getLastTime();
 
-                getCurTS(strBuf2);
+                uptimer.returnUptimeStr(strBuf2, sizeof(strBuf2));
                 sprintf(strBuf, "%s doSyncMicros: %lu, syncLenMicros: %lu, ", strBuf2, i, CLKSyncLenMicros);
                 getPrintableData(strBuf + strlen(strBuf));
 
                 if (data[21] != 255) {
-                    getCurTS(obtainedAtStr);
+                    uptimer.returnUptimeStr(strBuf2, sizeof(strBuf2));
 
                     volt = (data[13] + double(data[14]) / 256) * 2;
                     dtostrf(volt, 0, 6, voltStr);
@@ -376,44 +407,65 @@ void loop() {
                 }
 
                 log(strBuf);
+
+                if (blynkFlag && WiFiConnectedFlag &&
+                    ((blynkSendDataInSeconds == 0) ||
+                     Elapser::isElapsedTimeFromStart(lastBlynkSentDataSec, (uint32_t) blynkSendDataInSeconds, sec,
+                                                     true))) {
+                    uptimer.returnUptimeStr(strBuf2, sizeof(strBuf2));
+                    sprintf(strBuf, "%s Blynk: send data", strBuf2);
+                    log(strBuf);
+
+                    Blynk.virtualWrite(vPinVolt, voltStr);
+                    Blynk.virtualWrite(vPinAmpere, ampereStr);
+                    Blynk.virtualWrite(vPinWatt, wattStr);
+                }
             }
         }
-    } else if (isElapsedMicrosFromStart(lastDoSyncFinishMicros, disableInterruptWithinMicros))
+    } else if (Elapser::isElapsedTimeFromStart(lastDoSyncFinishMicros, disableInterruptWithinMicros, microSec))
         attachInt();
 
-    if (interruptActiveFlag && isElapsedMicrosFromStart(lastClientHandledMicros, clientMaxWaitMicros)) {
-        clientHandleForcedFlag = true;
+    if (interruptActiveFlag &&
+        Elapser::isElapsedTimeFromStart(lastClientHandledMicros, clientMaxWaitMicros, microSec)) {
         detachInt();
-        lg("clientHandleForced ");
+        clientHandleForcedFlag = true;
+
+        uptimer.returnUptimeStr(strBuf2, sizeof(strBuf2));
+        sprintf(strBuf, "%s clientHandleForced", strBuf2);
+        log(strBuf);
     }
 
-    if (!interruptActiveFlag || clientHandleForcedFlag) {
+    // Handle when no interrupt
+    if (!interruptActiveFlag) {
 #ifdef configOTAisActive
         ArduinoOTA.handle();
 #endif
         i = 0;
 
-        do {
-            yield();
-            clientHandledFlag = false;
-            server.handleClient(); // handle when no interrupt!
-            i++;
-        } while (clientHandledFlag);
+        server.handleClient();
 
-        if (i >= 2) {
-            getCurTS(strBuf2);
-            sprintf(strBuf, "%s Handled client(s): %lu", strBuf2, i - 1);
-            log(strBuf);
+        while (clientHandledFlag) {
+            clientHandledFlag = false;
+            i++;
+            yield();
+            server.handleClient();
         }
 
         lastClientHandledMicros = micros();
-    }
 
-    if (clientHandleForcedFlag) {
-        clientHandleForcedFlag = false;
-        attachInt();
+        if (i) {
+            uptimer.returnUptimeStr(strBuf2, sizeof(strBuf2));
+            sprintf(strBuf, "%s Handled client(s): %lu", strBuf2, i);
+            log(strBuf);
+        }
 
-        if (i == 1)
-            log();
+        if (blynkFlag && WiFiConnectedFlag)
+            Blynk.run();
+
+        if (clientHandleForcedFlag) {
+            clientHandleForcedFlag = false;
+            attachInt();
+        }
     }
+    // End Handle when no interrupt
 }
